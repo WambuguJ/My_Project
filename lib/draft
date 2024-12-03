@@ -1,0 +1,505 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:label="my_project"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <!-- Specifies an Android theme to apply to this Activity as soon as
+                 the Android process has started. This theme is visible to the user
+                 while the Flutter UI initializes. After that, this theme continues
+                 to determine the Window background behind the Flutter UI. -->
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <!-- Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+    </application>
+    <!-- Required to query activities that can process text, see:
+         https://developer.android.com/training/package-visibility and
+         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
+
+         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+    </queries>
+</manifest>
+------------------------------------------------------------------/---------------------
+  import 'package:flutter/material.dart';
+  import 'package:cloud_firestore/cloud_firestore.dart';
+  import 'package:intl/intl.dart';
+  import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+  import 'package:timezone/timezone.dart' as tz;
+  import 'package:timezone/data/latest.dart' as tz;
+
+  class AppointmentsPage extends StatefulWidget {
+    final String clientId;
+
+    const AppointmentsPage({
+      super.key,
+      required this.clientId,
+    });
+
+    @override
+    State<AppointmentsPage> createState() => _AppointmentsPageState();
+  }
+
+  class _AppointmentsPageState extends State<AppointmentsPage> {
+    final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+    final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+    FlutterLocalNotificationsPlugin();
+    bool _isReminderEnabled = true;
+
+    @override
+    void initState() {
+      super.initState();
+      _initializeNotifications();
+    }
+
+    Future<void> _initializeNotifications() async {
+      tz.initializeTimeZones();
+
+      const androidInitialize = AndroidInitializationSettings('app_icon');
+      const iOSInitialize = DarwinInitializationSettings(
+        requestSoundPermission: true,
+        requestBadgePermission: true,
+        requestAlertPermission: true,
+      );
+      const initializationSettings = InitializationSettings(
+        android: androidInitialize,
+        iOS: iOSInitialize,
+      );
+
+      await flutterLocalNotificationsPlugin.initialize(
+        initializationSettings,
+        onDidReceiveNotificationResponse: (NotificationResponse response) async {
+          // Handle notification tap
+        },
+      );
+    }
+
+    Future<void> _scheduleReminder(Map<String, dynamic> appointment) async {
+      if (!_isReminderEnabled) return;
+
+      final DateTime appointmentDate = (appointment['date'] as Timestamp).toDate();
+      final String appointmentTime = appointment['time'];
+      final DateTime reminderTime = DateFormat('HH:mm')
+          .parse(appointmentTime)
+          .subtract(const Duration(hours: 1));
+
+      final scheduledDate = DateTime(
+        appointmentDate.year,
+        appointmentDate.month,
+        appointmentDate.day,
+        reminderTime.hour,
+        reminderTime.minute,
+      );
+
+      if (scheduledDate.isBefore(DateTime.now())) return;
+
+      final androidDetails = AndroidNotificationDetails(
+        'appointments_channel',
+        'Appointments',
+        channelDescription: 'Appointment reminders',
+        importance: Importance.high,
+        priority: Priority.high,
+      );
+
+      final iOSDetails = const DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+      );
+
+      final notificationDetails = NotificationDetails(
+        android: androidDetails,
+        iOS: iOSDetails,
+      );
+
+      await flutterLocalNotificationsPlugin.zonedSchedule(
+        appointment.hashCode,
+        'Upcoming Appointment',
+        'You have an appointment at ${appointment['businessName']} in 1 hour',
+        tz.TZDateTime.from(scheduledDate, tz.local),
+        notificationDetails,
+        uiLocalNotificationDateInterpretation:
+        UILocalNotificationDateInterpretation.absoluteTime,
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+      );
+    }
+
+    Future<void> _cancelAppointment(String appointmentId, DateTime appointmentDate) async {
+      // Check if cancellation is allowed (e.g., 24 hours before appointment)
+      final now = DateTime.now();
+      final difference = appointmentDate.difference(now).inHours;
+
+      if (difference < 24) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Appointments can only be cancelled at least 24 hours in advance'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+
+      // Show confirmation dialog
+      final bool? confirm = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Cancel Appointment'),
+          content: const Text('Are you sure you want to cancel this appointment?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('No'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Yes'),
+            ),
+          ],
+        ),
+      );
+
+      if (confirm != true) return;
+
+      try {
+        await _firestore.collection('appointments').doc(appointmentId).update({
+          'status': 'cancelled',
+          'cancelledAt': FieldValue.serverTimestamp(),
+        });
+
+        // Cancel the reminder notification
+        await flutterLocalNotificationsPlugin.cancel(appointmentId.hashCode);
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Appointment cancelled successfully'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error cancelling appointment: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+
+    Stream<List<QueryDocumentSnapshot>> _getAppointments(bool isUpcoming) {
+      final now = Timestamp.fromDate(DateTime.now());
+
+      Query query = _firestore.collection('appointments').where('clientId', isEqualTo: widget.clientId);
+
+      // Add condition for upcoming or past appointments
+      if (isUpcoming) {
+        query = query.where('date', isGreaterThanOrEqualTo: now);
+      } else {
+        query = query.where('date', isLessThan: now);
+      }
+
+      // Order by date
+      query = query.orderBy('date', descending: !isUpcoming);
+
+      return query.snapshots().map((snapshot) => snapshot.docs);
+    }
+
+
+    Widget _buildStatusChip(String status) {
+      Color chipColor;
+      switch (status.toLowerCase()) {
+        case 'pending':
+          chipColor = Colors.orange;
+          break;
+        case 'confirmed':
+          chipColor = Colors.green;
+          break;
+        case 'cancelled':
+          chipColor = Colors.red;
+          break;
+        default:
+          chipColor = Colors.grey;
+      }
+
+      return Chip(
+        label: Text(
+          status.toUpperCase(),
+          style: const TextStyle(color: Colors.white, fontSize: 12),
+        ),
+        backgroundColor: chipColor,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+      );
+    }
+
+    Widget _buildAppointmentCard(QueryDocumentSnapshot doc) {
+      final data = doc.data() as Map<String, dynamic>;
+      final date = (data['date'] as Timestamp).toDate();
+      final service = data['service'] as Map<String, dynamic>;
+      final bool isPast = date.isBefore(DateTime.now());
+      final bool isCancelled = data['status'] == 'cancelled';
+
+      // Schedule reminder for upcoming appointments
+      if (!isPast && !isCancelled) {
+        _scheduleReminder(data);
+      }
+
+      return Card(
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Column(
+          children: [
+            ListTile(
+              title: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    data['businessName'],
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  _buildStatusChip(data['status']),
+                ],
+              ),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 8),
+                  Text('Service: ${service['name']}'),
+                  Text('Date: ${DateFormat('MMM dd, yyyy').format(date)}'),
+                  Text('Time: ${data['time']}'),
+                  if (data['notes']?.isNotEmpty ?? false)
+                    Text('Notes: ${data['notes']}'),
+                ],
+              ),
+              isThreeLine: true,
+            ),
+            if (!isPast && !isCancelled)
+              Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    IconButton(
+                      icon: Icon(
+                        _isReminderEnabled ? Icons.notifications_active : Icons.notifications_off,
+                        color: _isReminderEnabled ? Colors.purple : Colors.grey,
+                      ),
+                      onPressed: () {
+                        setState(() {
+                          _isReminderEnabled = !_isReminderEnabled;
+                        });
+                      },
+                      tooltip: _isReminderEnabled ? 'Disable reminder' : 'Enable reminder',
+                    ),
+                    const SizedBox(width: 8),
+                    TextButton.icon(
+                      icon: const Icon(Icons.cancel, color: Colors.red),
+                      label: const Text('Cancel Appointment'),
+                      onPressed: () => _cancelAppointment(doc.id, date),
+                      style: TextButton.styleFrom(foregroundColor: Colors.red),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      );
+    }
+
+    Widget _buildAppointmentsList(bool isUpcoming) {
+      return StreamBuilder<List<QueryDocumentSnapshot>>(
+        stream: _getAppointments(isUpcoming),
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return Center(child: Text('Error: ${snapshot.error}'));
+          }
+
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final appointments = snapshot.data;
+
+          if (appointments == null || appointments.isEmpty) {
+            return Center(
+              child: Text(
+                isUpcoming ? 'No upcoming appointments' : 'No past appointments',
+                style: const TextStyle(fontSize: 16, color: Colors.grey),
+              ),
+            );
+          }
+
+          return ListView.builder(
+            itemCount: appointments.length,
+            itemBuilder: (context, index) => _buildAppointmentCard(appointments[index]),
+          );
+        },
+      );
+    }
+
+    @override
+    Widget build(BuildContext context) {
+      return DefaultTabController(
+        length: 2,
+        child: Scaffold(
+          appBar: AppBar(
+            title: const Text('My Appointments'),
+            backgroundColor: Colors.purple[200],
+            bottom: const TabBar(
+              tabs: [
+                Tab(text: 'Upcoming'),
+                Tab(text: 'Past'),
+              ],
+            ),
+          ),
+          body: TabBarView(
+            children: [
+              _buildAppointmentsList(true),  // Upcoming appointments
+              _buildAppointmentsList(false), // Past appointments
+            ],
+          ),
+        ),
+      );
+    }
+  }}
+
+
+
+  Future<void> _fetchAvailableTimeSlots() async {
+      if (_selectedDate == null) {
+        print('No date selected');
+        return;
+      }
+
+        // Get the day of week with first letter capitalized to match Firebase format
+        String dayOfWeek = DateFormat('EEEE').format(_selectedDate!);
+        print('Fetching slots for $dayOfWeek');
+
+        // Verify business hours exist
+        if (widget.business.businessHours == null) {
+          print('No business hours defined');
+          setState(() {
+            _availableTimes = [];
+          });
+          return;
+        }
+
+        // Find business hours for selected day with debug logging
+        var businessHours = widget.business.businessHours!.firstWhere(
+              (hours) => hours['day'] == dayOfWeek,
+          orElse: () {
+            print('No hours found for $dayOfWeek');
+            return {'day': '', 'isOpen': false};
+          },
+        );
+
+        if (!businessHours['isOpen']) {
+          print('Business is closed on $dayOfWeek');
+          setState(() {
+            _availableTimes = [];
+          });
+          return;
+        }
+
+        try {
+          // Parse business hours - Convert 12-hour format to 24-hour format
+          String openTime = DateFormat('HH:mm')
+              .format(DateFormat('h:mm a').parse(businessHours['openTime']));
+          String closeTime = DateFormat('HH:mm')
+              .format(DateFormat('h:mm a').parse(businessHours['closeTime']));
+
+          print('Business hours: $openTime - $closeTime');
+
+          // Generate all possible time slots
+          List<String> allTimeSlots = [];
+          DateTime start = DateFormat('HH:mm').parse(openTime);
+          DateTime end = DateFormat('HH:mm').parse(closeTime);
+
+          while (start.isBefore(end)) {
+            // Format time slots in 12-hour format to match your UI requirements
+            allTimeSlots.add(DateFormat('h:mm a').format(start));
+            start = start.add(const Duration(minutes: 30));
+          }
+
+          print('Generated ${allTimeSlots.length} possible time slots');
+
+          // Fetch existing appointments
+          final startOfDay = DateTime(_selectedDate!.year, _selectedDate!.month, _selectedDate!.day);
+          final endOfDay = startOfDay.add(const Duration(days: 1));
+
+          final appointmentsSnapshot = await _firestore
+              .collection('appointments')
+              .where('businessId', isEqualTo: widget.business.id)
+              .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay))
+              .where('date', isLessThan: Timestamp.fromDate(endOfDay))
+              .where('status', whereIn: ['pending', 'confirmed'])
+              .get();
+
+          print('Found ${appointmentsSnapshot.docs.length} existing appointments');
+
+          Set<String> bookedTimeSlots = {};
+          for (var doc in appointmentsSnapshot.docs) {
+            final data = doc.data();
+            bookedTimeSlots.add(data['time'] as String);
+          }
+
+          List<String> availableTimeSlots = allTimeSlots
+              .where((time) => !bookedTimeSlots.contains(time))
+              .toList();
+
+          print('Available slots before filtering past times: ${availableTimeSlots.length}');
+
+          if (DateUtils.isSameDay(_selectedDate, DateTime.now())) {
+            final now = DateTime.now();
+            availableTimeSlots = availableTimeSlots.where((time) {
+              final timeSlot = DateFormat('h:mm a').parse(time);
+              final slotDateTime = DateTime(
+                now.year,
+                now.month,
+                now.day,
+                timeSlot.hour,
+                timeSlot.minute,
+              );
+              return slotDateTime.isAfter(now);
+            }).toList();
+          }
+
+          print('Final available slots: ${availableTimeSlots.length}');
+
+          setState(() {
+            _availableTimes = availableTimeSlots;
+            if (!_availableTimes.contains(_selectedTime)) {
+              _selectedTime = null;
+            }
+          });
+        } catch (e, stackTrace) {
+          print('Error fetching time slots: $e');
+          print('Stack trace: $stackTrace');
+          setState(() {
+            _availableTimes = [];
+          });
+        }
+      }

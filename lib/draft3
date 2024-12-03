@@ -1,0 +1,645 @@
+import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:image_picker/image_picker.dart';
+import 'dart:convert';
+import 'dart:io';
+
+class BusinessHours {
+  final String day;
+  final String openTime;
+  final String closeTime;
+  final bool isOpen;
+
+  BusinessHours({
+    required this.day,
+    required this.openTime,
+    required this.closeTime,
+    required this.isOpen,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'day': day,
+      'openTime': openTime,
+      'closeTime': closeTime,
+      'isOpen': isOpen,
+    };
+  }
+
+  factory BusinessHours.fromMap(Map<String, dynamic> map) {
+    return BusinessHours(
+      day: map['day'],
+      openTime: map['openTime'],
+      closeTime: map['closeTime'],
+      isOpen: map['isOpen'],
+    );
+  }
+}
+
+class ProfilePage extends StatefulWidget {
+  const ProfilePage({super.key});
+
+  @override
+  _ProfilePageState createState() => _ProfilePageState();
+}
+
+class _ProfilePageState extends State<ProfilePage> {
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  String? _profileImageBase64;
+  String _businessName = '';
+  List<Map<String, dynamic>> _services = [];
+  String _location = '';
+  List<BusinessHours> _businessHours = [];
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeBusinessHours();
+    _loadUserData();
+  }
+
+  void _initializeBusinessHours() {
+    _businessHours = [
+      BusinessHours(day: 'Monday', openTime: '9:00 AM', closeTime: '5:00 PM', isOpen: true),
+      BusinessHours(day: 'Tuesday', openTime: '9:00 AM', closeTime: '5:00 PM', isOpen: true),
+      BusinessHours(day: 'Wednesday', openTime: '9:00 AM', closeTime: '5:00 PM', isOpen: true),
+      BusinessHours(day: 'Thursday', openTime: '9:00 AM', closeTime: '5:00 PM', isOpen: true),
+      BusinessHours(day: 'Friday', openTime: '9:00 AM', closeTime: '5:00 PM', isOpen: true),
+      BusinessHours(day: 'Saturday', openTime: '10:00 AM', closeTime: '4:00 PM', isOpen: true),
+      BusinessHours(day: 'Sunday', openTime: '10:00 AM', closeTime: '4:00 PM', isOpen: false),
+    ];
+  }
+
+  Future<void> _loadUserData() async {
+    final user = _auth.currentUser;
+    if (user != null) {
+      final userDoc = await _firestore.collection('users').doc(user.uid).get();
+      if (userDoc.exists) {
+        setState(() {
+          _profileImageBase64 = userDoc.data()?['profileImage'];
+          _services = List<Map<String, dynamic>>.from(userDoc.data()?['services'] ?? []);
+          _location = userDoc.data()?['location'] ?? '';
+          _businessName = userDoc.data()?['businessName'] ?? '';
+
+          if (userDoc.data()?['businessHours'] != null) {
+            _businessHours = List<BusinessHours>.from(
+                userDoc.data()?['businessHours'].map((x) => BusinessHours.fromMap(x))
+            );
+          }
+        });
+      }
+    }
+  }
+
+  Future<void> _uploadProfileImage() async {
+    try {
+      final picker = ImagePicker();
+      final pickedFile = await picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 512,
+        maxHeight: 512,
+        imageQuality: 50,
+      );
+
+      if (pickedFile == null) return;
+
+      setState(() => _isLoading = true);
+
+      final bytes = await pickedFile.readAsBytes();
+      final base64Image = base64Encode(bytes);
+
+      if (base64Image.length > 900000) {
+        throw Exception('Image too large. Please choose a smaller image.');
+      }
+
+      final user = _auth.currentUser;
+      if (user != null) {
+        await _firestore.collection('users').doc(user.uid).set({
+          'profileImage': base64Image,
+          'lastUpdated': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+
+        setState(() {
+          _profileImageBase64 = base64Image;
+          _isLoading = false;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Profile picture updated successfully')),
+        );
+      }
+    } catch (e) {
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error updating profile picture: $e')),
+      );
+    }
+  }
+
+  void _showAddServiceDialog() {
+    final nameController = TextEditingController();
+    final priceController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Add New Service'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameController,
+              decoration: const InputDecoration(
+                labelText: 'Service Name',
+                hintText: 'e.g. manicure',
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: priceController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Price (\Ksh)',
+                hintText: 'e.g. 30',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              _addService(nameController.text, priceController.text);
+              Navigator.pop(context);
+            },
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _addService(String name, String price) async {
+    if (name.trim().isEmpty || price.trim().isEmpty) return;
+
+    final newService = {
+      'name': name.trim(),
+      'price': double.tryParse(price.trim()) ?? 0,
+    };
+
+    final user = _auth.currentUser;
+    if (user != null) {
+      await _firestore.collection('users').doc(user.uid).update({
+        'services': FieldValue.arrayUnion([newService]),
+      });
+
+      setState(() {
+        _services.add(newService);
+      });
+    }
+  }
+
+  Future<void> _updateBusinessHours(int index) async {
+    TimeOfDay? openTime = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.now(),
+    );
+
+    if (openTime == null) return;
+
+    TimeOfDay? closeTime = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.now(),
+    );
+
+    if (closeTime == null) return;
+
+    setState(() {
+      _businessHours[index] = BusinessHours(
+        day: _businessHours[index].day,
+        openTime: '${openTime.format(context)}',
+        closeTime: '${closeTime.format(context)}',
+        isOpen: _businessHours[index].isOpen,
+      );
+    });
+
+    final user = _auth.currentUser;
+    if (user != null) {
+      await _firestore.collection('users').doc(user.uid).update({
+        'businessHours': _businessHours.map((h) => h.toMap()).toList(),
+      });
+    }
+  }
+
+  void _toggleDayStatus(int index) async {
+    setState(() {
+      _businessHours[index] = BusinessHours(
+        day: _businessHours[index].day,
+        openTime: _businessHours[index].openTime,
+        closeTime: _businessHours[index].closeTime,
+        isOpen: !_businessHours[index].isOpen,
+      );
+    });
+
+    final user = _auth.currentUser;
+    if (user != null) {
+      await _firestore.collection('users').doc(user.uid).update({
+        'businessHours': _businessHours.map((h) => h.toMap()).toList(),
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Business Profile'),
+        backgroundColor: Colors.purple[200],
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: _auth.signOut,
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16.0),
+        children: [
+          // Profile Section
+          Center(
+            child: Column(
+              children: [
+                GestureDetector(
+                  onTap: _uploadProfileImage,
+                  child: Stack(
+                    children: [
+                      CircleAvatar(
+                        radius: 60,
+                        backgroundImage: _profileImageBase64 != null
+                            ? MemoryImage(base64Decode(_profileImageBase64!))
+                            : null,
+                        child: _profileImageBase64 == null
+                            ? const Icon(Icons.person, size: 40)
+                            : null,
+                      ),
+                      Positioned(
+                        bottom: 0,
+                        right: 0,
+                        child: CircleAvatar(
+                          backgroundColor: Colors.purple[200],
+                          radius: 20,
+                          child: const Icon(Icons.camera_alt, color: Colors.white),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _businessName,
+                  style: Theme.of(context).textTheme.headlineSmall,
+                ),
+                Text(
+                  _location,
+                  style: Theme.of(context).textTheme.bodyLarge,
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 32),
+
+          // Services Section
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Services',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              IconButton(
+                icon: const Icon(Icons.add_circle),
+                color: Colors.purple[200],
+                onPressed: _showAddServiceDialog,
+              ),
+            ],
+          ),
+          Card(
+            child: ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _services.length,
+              separatorBuilder: (context, index) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final service = _services[index];
+                return ListTile(
+                  title: Text(service['name']),
+                  trailing: Text(
+                    '\$${service['price'].toStringAsFixed(2)}',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          // Business Hours Section
+          Text(
+            'Business Hours',
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
+          Card(
+            child: ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _businessHours.length,
+              separatorBuilder: (context, index) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final hours = _businessHours[index];
+                return ListTile(
+                  title: Text(hours.day),
+                  subtitle: hours.isOpen
+                      ? Text('${hours.openTime} - ${hours.closeTime}')
+                      : const Text('Closed'),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Switch(
+                        value: hours.isOpen,
+                        onChanged: (value) => _toggleDayStatus(index),
+                      ),
+                      if (hours.isOpen)
+                        IconButton(
+                          icon: const Icon(Icons.edit),
+                          onPressed: () => _updateBusinessHours(index),
+                        ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+--------------------------------------------------------------------------
+//h
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart';
+
+class AppointmentsPage extends StatelessWidget {
+  final String clientId;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  AppointmentsPage({
+    super.key,
+    required this.clientId,
+  });
+
+  Stream<List<QueryDocumentSnapshot>> _getUpcomingAppointments() {
+    return _firestore
+        .collection('appointments')
+        .where('clientId', isEqualTo: clientId)
+        .where('status', whereIn: ['pending', 'confirmed'])
+        .snapshots()
+        .map((snapshot) {
+      final now = DateTime.now();
+      return snapshot.docs.where((doc) {
+        final data = doc.data() as Map<String, dynamic>;
+        final appointmentDate = (data['date'] as Timestamp).toDate();
+        return appointmentDate.isAfter(now);
+      }).toList();
+    });
+  }
+
+  Future<void> _cancelAppointment(BuildContext context, String appointmentId) async {
+    try {
+      // Show confirmation dialog
+      bool? confirm = await showDialog<bool>(
+        context: context,
+        builder: (BuildContext context) {
+          return AlertDialog(
+            title: const Text('Cancel Appointment'),
+            content: const Text('Are you sure you want to cancel this appointment?'),
+            actions: <Widget>[
+              TextButton(
+                child: const Text('No'),
+                onPressed: () => Navigator.of(context).pop(false),
+              ),
+              TextButton(
+                child: const Text('Yes'),
+                onPressed: () => Navigator.of(context).pop(true),
+              ),
+            ],
+          );
+        },
+      );
+
+      if (confirm ?? false) {
+        await _firestore
+            .collection('appointments')
+            .doc(appointmentId)
+            .update({'status': 'cancelled'});
+
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Appointment cancelled successfully'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error cancelling appointment: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Widget _buildAppointmentCard(BuildContext context, QueryDocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    final date = (data['date'] as Timestamp).toDate();
+    final service = data['service'] as Map<String, dynamic>;
+
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Text(
+                    data['businessName'] ?? 'Unknown Business',
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: data['status'] == 'pending'
+                        ? Colors.orange[100]
+                        : Colors.green[100],
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    data['status'].toUpperCase(),
+                    style: TextStyle(
+                      color: data['status'] == 'pending'
+                          ? Colors.orange[900]
+                          : Colors.green[900],
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                const Icon(Icons.calendar_today, size: 16),
+                const SizedBox(width: 8),
+                Text(
+                  DateFormat('MMM dd, yyyy').format(date),
+                  style: const TextStyle(fontSize: 16),
+                ),
+                const SizedBox(width: 16),
+                const Icon(Icons.access_time, size: 16),
+                const SizedBox(width: 8),
+                Text(
+                  data['time'],
+                  style: const TextStyle(fontSize: 16),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Icon(Icons.spa, size: 16),
+                const SizedBox(width: 8),
+                Text(
+                  '${service['name']} - \$${service['price']}',
+                  style: const TextStyle(fontSize: 16),
+                ),
+              ],
+            ),
+            if (data['notes']?.isNotEmpty ?? false) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Icon(Icons.note, size: 16),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      data['notes'],
+                      style: const TextStyle(fontSize: 16),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton.icon(
+                  onPressed: () => _cancelAppointment(context, doc.id),
+                  icon: const Icon(Icons.cancel, color: Colors.red),
+                  label: const Text(
+                    'Cancel Appointment',
+                    style: TextStyle(color: Colors.red),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('My Appointments'),
+        backgroundColor: Colors.purple[200],
+      ),
+      body: StreamBuilder<List<QueryDocumentSnapshot>>(
+        stream: _getUpcomingAppointments(),
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return Center(
+              child: Text('Error: ${snapshot.error}'),
+            );
+          }
+
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final appointments = snapshot.data;
+
+          if (appointments == null || appointments.isEmpty) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(
+                    Icons.calendar_today,
+                    size: 64,
+                    color: Colors.grey,
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'No upcoming appointments',
+                    style: TextStyle(
+                      fontSize: 18,
+                      color: Colors.grey,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Book an Appointment'),
+                  ),
+                ],
+              ),
+            );
+          }
+
+          return ListView.builder(
+            padding: const EdgeInsets.only(top: 16, bottom: 24),
+            itemCount: appointments.length,
+            itemBuilder: (context, index) =>
+                _buildAppointmentCard(context, appointments[index]),
+          );
+        },
+      ),
+    );
+  }
+}

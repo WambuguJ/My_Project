@@ -1,0 +1,640 @@
+import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+import 'location_handler.dart';
+import 'custom_search_delegate.dart';
+import 'screens/messages_page.dart';
+import 'screens/calendar_page.dart';
+import 'screens/profile_page.dart';
+
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
+
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  int _currentIndex = 0;
+  final PageController _pageController = PageController();
+  String? _currentAddress;
+  Position? _currentPosition;
+  final MapController _mapController = MapController();
+  bool _showMap = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _getCurrentPosition();
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _getCurrentPosition() async {
+    final position = await LocationHandler.getCurrentPosition(context);
+    if (position == null) return;
+
+    setState(() => _currentPosition = position);
+    _getAddressFromLatLng(_currentPosition!);
+
+    // Move map to current position
+    if (_currentPosition != null) {
+      _mapController.move(
+        LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+        15,
+      );
+    }
+  }
+
+  Future<void> _getAddressFromLatLng(Position position) async {
+    final address = await LocationHandler.getAddressFromLatLng(position);
+    setState(() {
+      _currentAddress = address;
+    });
+  }
+
+  Widget _buildLocationContent() {
+    return Stack(
+      children: [
+        _showMap
+            ? FlutterMap(
+          mapController: _mapController,
+          options: MapOptions(
+            initialCenter: _currentPosition != null
+                ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
+                : const LatLng(0, 0),
+            initialZoom: 15,
+          ),
+          children: [
+            TileLayer(
+              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+              userAgentPackageName: 'com.example.my_project', // Replace with your app package name
+            ),
+            if (_currentPosition != null)
+              MarkerLayer(
+                markers: [
+                  Marker(
+                    point: LatLng(
+                      _currentPosition!.latitude,
+                      _currentPosition!.longitude,
+                    ),
+                    width: 80,
+                    height: 80,
+                    child: const Icon(
+                      Icons.location_pin,
+                      color: Colors.red,
+                      size: 40,
+                    ),
+                  ),
+                ],
+              ),
+          ],
+        )
+            : Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text('LAT: ${_currentPosition?.latitude ?? ""}'),
+              Text('LNG: ${_currentPosition?.longitude ?? ""}'),
+              Text('ADDRESS: ${_currentAddress ?? ""}'),
+              const SizedBox(height: 32),
+              ElevatedButton(
+                onPressed: _getCurrentPosition,
+                child: const Text("Get Current Location"),
+              ),
+            ],
+          ),
+        ),
+        if (_showMap)
+          Positioned(
+            right: 16,
+            bottom: 16,
+            child: FloatingActionButton(
+              onPressed: _getCurrentPosition,
+              child: const Icon(Icons.my_location),
+            ),
+          ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final List<Widget> pages = [
+      _buildLocationContent(),
+      CalendarPage(),
+      const MessagesPage(),
+      const ProfilePage(),
+    ];
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('StyleHub'),
+        backgroundColor: Colors.purple[200],
+        actions: [
+          if (_currentIndex == 0)
+            IconButton(
+              icon: Icon(_showMap ? Icons.list : Icons.map),
+              onPressed: () {
+                setState(() {
+                  _showMap = !_showMap;
+                });
+              },
+            ),
+        ],
+      ),
+      body: Column(
+        children: [
+          if (_currentIndex == 0)
+            Padding(
+              padding: const EdgeInsets.all(10.0),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(30),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.grey.withOpacity(0.5),
+                      spreadRadius: 2,
+                      blurRadius: 5,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: TextField(
+                  onTap: () {
+                    showSearch(context: context, delegate: CustomSearchDelegate());
+                  },
+                  decoration: InputDecoration(
+                    hintText: 'Search for salons...',
+                    border: InputBorder.none,
+                    contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.search, color: Colors.grey),
+                      onPressed: () {
+                        showSearch(
+                            context: context, delegate: CustomSearchDelegate());
+                      },
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          Expanded(
+            child: PageView(
+              controller: _pageController,
+              children: pages,
+              onPageChanged: (index) {
+                setState(() {
+                  _currentIndex = index;
+                });
+              },
+            ),
+          ),
+        ],
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.home),
+            label: 'Home',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.calendar_today),
+            label: 'Calendar',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.message),
+            label: 'Messages',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.person),
+            label: 'Profile',
+          ),
+        ],
+        currentIndex: _currentIndex,
+        selectedItemColor: Colors.deepPurple,
+        unselectedItemColor: Colors.purple[200],
+        onTap: (index) {
+          setState(() {
+            _currentIndex = index;
+            _pageController.animateToPage(
+              index,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeInOut,
+            );
+          });
+        },
+      ),
+    );
+  }
+}
+------------------------------------------------------------------------------------------------
+class _BusinessDashboardState extends State<BusinessDashboard> {
+  int _currentIndex = 0;
+  final PageController _pageController = PageController();
+
+  // ... (keep your existing _pages list)
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Business Dashboard'),
+        backgroundColor: Colors.purple[200],
+      ),
+      body: PageView(
+        controller: _pageController,
+        children: _pages,
+        onPageChanged: (index) {
+          setState(() {
+            _currentIndex = index;
+          });
+        },
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        type: BottomNavigationBarType.fixed,
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.dashboard),
+            label: 'Dashboard',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.calendar_today),
+            label: 'Calendar',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.message),
+            label: 'Messages',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.person),
+            label: 'Profile',
+          ),
+        ],
+        currentIndex: _currentIndex,
+        selectedItemColor: Colors.deepPurple,
+        unselectedItemColor: Colors.purple[200],
+        onTap: (index) {
+          setState(() {
+            _currentIndex = index;
+            _pageController.animateToPage(
+              index,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeInOut,
+            );
+          });
+
+          // Redirect to the Profile Page when the person icon is tapped
+          if (index == 3) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const ProfilePage()),
+            );
+          }
+        },
+      ),
+    );
+  }
+}
+---------------------------------------------------------------------------------------------------------
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart';
+
+class BusinessAppointmentsPage extends StatefulWidget {
+  final String businessId;
+
+  const BusinessAppointmentsPage({
+    Key? key,
+    required this.businessId,
+  }) : super(key: key);
+
+  @override
+  State<BusinessAppointmentsPage> createState() => _BusinessAppointmentsPageState();
+}
+
+class _BusinessAppointmentsPageState extends State<BusinessAppointmentsPage> {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final TextEditingController _timeSlotController = TextEditingController();
+  DateTime? _selectedDate;
+
+  @override
+  void dispose() {
+    _timeSlotController.dispose();
+    super.dispose();
+  }
+
+  Stream<List<QueryDocumentSnapshot>> _getAppointments() {
+    return _firestore
+        .collection('appointments')
+        .where('businessId', isEqualTo: widget.businessId)
+        .where('status', whereIn: ['pending', 'confirmed'])
+        .snapshots()
+        .map((snapshot) => snapshot.docs);
+  }
+
+  Future<void> _updateAppointmentStatus(String appointmentId, String status) async {
+    try {
+      await _firestore.collection('appointments').doc(appointmentId).update({
+        'status': status,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Appointment $status successfully'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error updating appointment: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _addTimeSlot() async {
+    if (_selectedDate == null) {
+      // Handle error
+      return;
+    }
+
+    try {
+      await _firestore
+          .collection('businesses')
+          .doc(widget.businessId)
+          .collection('timeSlots')
+          .add({
+        'date': Timestamp.fromDate(_selectedDate!),
+        'time': _timeSlotController.text,
+        'isBooked': false,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      // Show success message
+    } catch (e) {
+      // Handle error
+    }
+  }
+
+
+  Widget _buildAppointmentCard(QueryDocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    final date = (data['date'] as Timestamp).toDate();
+    final service = data['service'] as Map<String, dynamic>;
+
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: ListTile(
+        title: Text(
+          'Client: ${data['clientName']}',
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 8),
+            Text('Service: ${service['name']}'),
+            Text('Date: ${DateFormat('MMM dd, yyyy').format(date)}'),
+            Text('Time: ${data['time']}'),
+            if (data['notes']?.isNotEmpty ?? false)
+              Text('Notes: ${data['notes']}'),
+          ],
+        ),
+        trailing: data['status'] == 'pending'
+            ? Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.check_circle, color: Colors.green),
+              onPressed: () => _updateAppointmentStatus(doc.id, 'confirmed'),
+              tooltip: 'Confirm',
+            ),
+            IconButton(
+              icon: const Icon(Icons.cancel, color: Colors.red),
+              onPressed: () => _updateAppointmentStatus(doc.id, 'rejected'),
+              tooltip: 'Reject',
+            ),
+          ],
+        )
+            : null,
+      ),
+    );
+  }
+
+  Widget _buildTimeSlotAdder() {
+    return Card(
+      margin: const EdgeInsets.all(16),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Add Available Time Slot',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: TextButton.icon(
+                    icon: const Icon(Icons.calendar_today),
+                    label: Text(
+                      _selectedDate == null
+                          ? 'Select Date'
+                          : DateFormat('MMM dd, yyyy').format(_selectedDate!),
+                    ),
+                    onPressed: () async {
+                      final DateTime? picked = await showDatePicker(
+                        context: context,
+                        initialDate: DateTime.now(),
+                        firstDate: DateTime.now(),
+                        lastDate: DateTime.now().add(const Duration(days: 365)),
+                      );
+                      if (picked != null) {
+                        setState(() {
+                          _selectedDate = picked;
+                        });
+                      }
+                    },
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: TextField(
+                    controller: _timeSlotController,
+                    decoration: const InputDecoration(
+                      labelText: 'Time (HH:mm)',
+                      hintText: 'e.g., 14:30',
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Align(
+              alignment: Alignment.centerRight,
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.add),
+                label: const Text('Add Time Slot'),
+                onPressed: _addTimeSlot,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Manage Business'),
+          backgroundColor: Colors.purple[200],
+          bottom: const TabBar(
+            tabs: [
+              Tab(text: 'Pending'),
+              Tab(text: 'Confirmed'),
+            ],
+          ),
+        ),
+        body: TabBarView(
+          children: [
+            // Pending Appointments
+            StreamBuilder<List<QueryDocumentSnapshot>>(
+              stream: _getAppointments(),
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(child: Text('Error: ${snapshot.error}'));
+                }
+
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                final appointments = snapshot.data?.where((doc) => doc['status'] == 'pending').toList();
+
+                if (appointments == null || appointments.isEmpty) {
+                  return const Center(
+                    child: Text(
+                      'No pending appointments',
+                      style: TextStyle(fontSize: 16, color: Colors.grey),
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  itemCount: appointments.length,
+                  itemBuilder: (context, index) => _buildAppointmentCard(appointments[index]),
+                );
+              },
+            ),
+            // Confirmed Appointments
+            StreamBuilder<List<QueryDocumentSnapshot>>(
+              stream: _getAppointments(),
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(child: Text('Error: ${snapshot.error}'));
+                }
+
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                final appointments = snapshot.data?.where((doc) => doc['status'] == 'confirmed').toList();
+
+                if (appointments == null || appointments.isEmpty) {
+                  return const Center(
+                    child: Text(
+                      'No confirmed appointments',
+                      style: TextStyle(fontSize: 16, color: Colors.grey),
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  itemCount: appointments.length,
+                  itemBuilder: (context, index) => _buildAppointmentCard(appointments[index]),
+                );
+              },
+            ),
+            // Time Slots Management
+            Column(
+              children: [
+                _buildTimeSlotAdder(),
+                Expanded(
+                  child: StreamBuilder<QuerySnapshot>(
+                    stream: _firestore
+                        .collection('businesses')
+                        .doc(widget.businessId)
+                        .collection('timeSlots')
+                        .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(DateTime.now()))
+                        .orderBy('date')
+                        .snapshots(),
+                    builder: (context, snapshot) {
+                      if (snapshot.hasError) {
+                        return Center(child: Text('Error: ${snapshot.error}'));
+                      }
+
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const Center(child: CircularProgressIndicator());
+                      }
+
+                      final timeSlots = snapshot.data?.docs;
+
+                      if (timeSlots == null || timeSlots.isEmpty) {
+                        return const Center(
+                          child: Text(
+                            'No available time slots',
+                            style: TextStyle(fontSize: 16, color: Colors.grey),
+                          ),
+                        );
+                      }
+
+                      return ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: timeSlots.length,
+                        itemBuilder: (context, index) {
+                          final slot = timeSlots[index].data() as Map<String, dynamic>;
+                          final date = (slot['date'] as Timestamp).toDate();
+
+                          return ListTile(
+                            title: Text(DateFormat('MMM dd, yyyy').format(date)),
+                            subtitle: Text('Time: ${slot['time']}'),
+                            trailing: IconButton(
+                              icon: const Icon(Icons.delete, color: Colors.red),
+                              onPressed: () {
+                                timeSlots[index].reference.delete();
+                              },
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}}

@@ -1,0 +1,476 @@
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart';
+
+class BusinessAppointmentsManagement extends StatefulWidget {
+  final String businessId;
+
+  const BusinessAppointmentsManagement({
+    Key? key,
+    required this.businessId,
+  }) : super(key: key);
+
+  @override
+  State<BusinessAppointmentsManagement> createState() => _BusinessAppointmentsManagementState();
+}
+
+class _BusinessAppointmentsManagementState extends State<BusinessAppointmentsManagement> {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  DateTime _selectedDate = DateTime.now();
+
+  Stream<List<QueryDocumentSnapshot>> _getAppointmentsForDate(DateTime date) {
+    final startOfDay = DateTime(date.year, date.month, date.day);
+    final endOfDay = startOfDay.add(const Duration(days: 1));
+
+    return _firestore
+        .collection('appointments')
+        .where('businessId', isEqualTo: widget.businessId)
+        .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay))
+        .where('date', isLessThan: Timestamp.fromDate(endOfDay))
+        .snapshots()
+        .map((snapshot) => snapshot.docs);
+  }
+
+  Future<void> _updateAppointmentStatus(String appointmentId, String newStatus) async {
+    try {
+      await _firestore
+          .collection('appointments')
+          .doc(appointmentId)
+          .update({'status': newStatus});
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Appointment $newStatus successfully'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error updating appointment: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Widget _buildAppointmentCard(QueryDocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    final date = (data['date'] as Timestamp).toDate();
+    final service = data['service'] as Map<String, dynamic>;
+
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  data['time'],
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                _buildStatusBadge(data['status']),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Service: ${service['name']} - \$${service['price']}',
+              style: const TextStyle(fontSize: 16),
+            ),
+            const SizedBox(height: 8),
+            if (data['notes']?.isNotEmpty ?? false)
+              Text(
+                'Notes: ${data['notes']}',
+                style: const TextStyle(fontSize: 16),
+              ),
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                if (data['status'] == 'pending') ...[
+                  TextButton.icon(
+                    onPressed: () => _updateAppointmentStatus(doc.id, 'confirmed'),
+                    icon: const Icon(Icons.check, color: Colors.green),
+                    label: const Text('Confirm'),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton.icon(
+                    onPressed: () => _updateAppointmentStatus(doc.id, 'cancelled'),
+                    icon: const Icon(Icons.close, color: Colors.red),
+                    label: const Text('Decline'),
+                  ),
+                ] else if (data['status'] == 'confirmed') ...[
+                  TextButton.icon(
+                    onPressed: () => _updateAppointmentStatus(doc.id, 'completed'),
+                    icon: const Icon(Icons.done_all, color: Colors.blue),
+                    label: const Text('Mark Complete'),
+                  ),
+                ],
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatusBadge(String status) {
+    Color backgroundColor;
+    Color textColor;
+
+    switch (status) {
+      case 'pending':
+        backgroundColor = Colors.orange[100]!;
+        textColor = Colors.orange[900]!;
+        break;
+      case 'confirmed':
+        backgroundColor = Colors.green[100]!;
+        textColor = Colors.green[900]!;
+        break;
+      case 'completed':
+        backgroundColor = Colors.blue[100]!;
+        textColor = Colors.blue[900]!;
+        break;
+      default:
+        backgroundColor = Colors.grey[100]!;
+        textColor = Colors.grey[900]!;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        status.toUpperCase(),
+        style: TextStyle(
+          color: textColor,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Manage Appointments'),
+        backgroundColor: Colors.purple[200],
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: CalendarDatePicker(
+              initialDate: _selectedDate,
+              firstDate: DateTime.now().subtract(const Duration(days: 365)),
+              lastDate: DateTime.now().add(const Duration(days: 365)),
+              onDateChanged: (date) {
+                setState(() {
+                  _selectedDate = date;
+                });
+              },
+            ),
+          ),
+          Expanded(
+            child: StreamBuilder<List<QueryDocumentSnapshot>>(
+              stream: _getAppointmentsForDate(_selectedDate),
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Text('Error: ${snapshot.error}'),
+                  );
+                }
+
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                final appointments = snapshot.data;
+
+                if (appointments == null || appointments.isEmpty) {
+                  return const Center(
+                    child: Text(
+                      'No appointments for this date',
+                      style: TextStyle(fontSize: 16, color: Colors.grey),
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  padding: const EdgeInsets.only(bottom: 24),
+                  itemCount: appointments.length,
+                  itemBuilder: (context, index) =>
+                      _buildAppointmentCard(appointments[index]),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+---------------------------------------------------------------
+
+import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:io';
+import 'dart:convert';
+
+class ProfilePage extends StatefulWidget {
+  const ProfilePage({super.key});
+
+  @override
+  State<ProfilePage> createState() => _ProfilePageState();
+}
+
+class _ProfilePageState extends State<ProfilePage> {
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final ImagePicker _picker = ImagePicker();
+
+  String? _profileImageBase64;
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProfileImage();
+  }
+
+  Future<void> _loadProfileImage() async {
+    try {
+      final userId = _auth.currentUser?.uid;
+      if (userId != null) {
+        final docSnapshot = await _firestore
+            .collection('users')
+            .doc(userId)
+            .get();
+
+        if (docSnapshot.exists) {
+          setState(() {
+            _profileImageBase64 = docSnapshot.data()?['profileImage'];
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading profile image: $e');
+    }
+  }
+
+  Future<void> _uploadImage() async {
+    try {
+      final XFile? image = await _picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 512, // Limit image size
+        maxHeight: 512,
+        imageQuality: 50, // Reduce quality to keep file size down
+      );
+
+      if (image == null) return;
+
+      setState(() {
+        _isLoading = true;
+      });
+
+      // Convert image to base64
+      final bytes = await image.readAsBytes();
+      final base64Image = base64Encode(bytes);
+
+      // Check file size (Firestore document limit is 1MB)
+      if (base64Image.length > 900000) { // Leave some room for other fields
+        throw Exception('Image too large. Please choose a smaller image.');
+      }
+
+      // Store in Firestore
+      await _firestore.collection('users').doc(_auth.currentUser?.uid).set({
+        'profileImage': base64Image,
+        'lastUpdated': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      setState(() {
+        _profileImageBase64 = base64Image;
+        _isLoading = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Profile picture updated successfully')),
+      );
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error updating profile picture: $e')),
+      );
+    }
+  }
+
+  Future<void> _logout() async {
+    try {
+      await _auth.signOut();
+      // Navigate to login page after logging out
+      Navigator.of(context).pushReplacementNamed('/login');
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error logging out: $e')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final user = _auth.currentUser;
+
+    return Scaffold(
+      body: SingleChildScrollView(
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              children: [
+                // Profile Picture
+                Center(
+                  child: Stack(
+                    children: [
+                      CircleAvatar(
+                        radius: 60,
+                        backgroundImage: _profileImageBase64 != null
+                            ? MemoryImage(base64Decode(_profileImageBase64!))
+                            : const AssetImage('assets/default_profile.png') as ImageProvider,
+                        child: _isLoading
+                            ? const CircularProgressIndicator()
+                            : null,
+                      ),
+                      Positioned(
+                        bottom: 0,
+                        right: 0,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.deepPurple,
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: IconButton(
+                            icon: const Icon(Icons.camera_alt, color: Colors.white),
+                            onPressed: _uploadImage,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+
+                // User Details
+                StreamBuilder<DocumentSnapshot>(
+                  stream: _firestore.collection('users').doc(user?.uid).snapshots(),
+                  builder: (context, snapshot) {
+                    if (snapshot.hasData && snapshot.data?.exists == true) {
+                      final userData = snapshot.data!.data() as Map<String, dynamic>;
+                      return Column(
+                        children: [
+                          Text(
+                            userData['displayName'] ?? user?.displayName ?? "User",
+                            style: const TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            userData['email'] ?? user?.email ?? "No email",
+                            style: const TextStyle(
+                              fontSize: 16,
+                              color: Colors.black54,
+                            ),
+                          ),
+                        ],
+                      );
+                    }
+                    return Column(
+                      children: [
+                        Text(
+                          user?.displayName ?? "User",
+                          style: const TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          user?.email ?? "No email",
+                          style: const TextStyle(
+                            fontSize: 16,
+                            color: Colors.black54,
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+                const SizedBox(height: 20),
+
+                // Settings Section
+                const Text(
+                  "Settings",
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 10),
+
+                // Settings List
+                ListTile(
+                  leading: const Icon(Icons.notifications),
+                  title: const Text("Notifications"),
+                  trailing: const Icon(Icons.arrow_forward_ios),
+                  onTap: () {
+                    // Navigate to notifications settings
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.lock),
+                  title: const Text("Privacy"),
+                  trailing: const Icon(Icons.arrow_forward_ios),
+                  onTap: () {
+                    // Navigate to privacy settings
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.help),
+                  title: const Text("Help"),
+                  trailing: const Icon(Icons.arrow_forward_ios),
+                  onTap: () {
+                    // Navigate to help section
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.logout, color: Colors.red),
+                  title: const Text("Logout", style: TextStyle(color: Colors.red)),
+                  onTap: _logout,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
